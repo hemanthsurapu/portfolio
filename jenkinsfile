@@ -1,0 +1,89 @@
+pipeline {
+     agent any
+            
+    environment  {
+		BRANCH_NAME = 'main'
+		ECR_REPO="your repo"
+        ECR_PUBLISH_IMAGE_TAG = "${ECR_REPO}:${BUILD_ID}"
+        MY_SECRET = credentials('GITHUB_TOKEN')
+    }
+    stages {
+        stage('Cleaning Workspace') {
+            steps {
+                cleanWs()
+            }
+        }
+        stage('Clone Repo') {
+            steps {
+                git branch: "${BRANCH_NAME}",url: 'https://github.com/hemanthsurapu/kyc.git'
+				}
+			}
+        stage('Build and publish Docker Image') {
+            steps {
+                script {
+                        sh '''
+                            # Build Docker image
+							docker build -t $ECR_REPO:latest .
+							
+							# Tag the docker image
+							docker tag $ECR_REPO:latest $ECR_PUBLISH_IMAGE_TAG
+							
+							docker images
+							
+							'''
+							}
+						}
+					}
+		 stage('login and Push Docker Image') {
+            steps {
+                script {
+						sh'''	
+						    #Log in to ECR
+						      aws ecr get-login-password --region us-east-1 | docker login --username AWS --password-stdin 135808923653.dkr.ecr.us-east-1.amazonaws.com
+							  # push Docker image to ECR
+							  docker push $ECR_PUBLISH_IMAGE_TAG
+							
+						'''
+                    }
+                }
+            }
+           stage("Update Manifest Repo") {
+                steps {
+                    
+                        script {
+                            git branch: 'main',
+                                credentialsId: 'aws-infra-git',
+                                url: 'https://github.com/hemanthsurapu/mobilefirst-manifest.git'
+            
+                            sh '''
+                                ls -al
+                                cd kyc/
+                                git config user.email "hemanthsurapu@gmail.com"
+                                git config user.name "hemanthsurapu"
+                                echo "Build Number: $BUILD_NUMBER"
+            
+                                sed -i "s|image:.*|image: $ECR_PUBLISH_IMAGE_TAG|" deploy-service.yaml
+                             
+                                git add deploy-service.yaml
+                                git commit -m "Update deployment image to version ${BUILD_NUMBER}" || echo "No changes to commit"
+                                 git push https://${MY_SECRET}@github.com/hemanthsurapu/mobilefirst-manifest HEAD:main
+                            '''
+                        }
+                    }
+                }
+        }
+        post {
+                success {
+                    sh'''
+                    #post build actions
+                    echo "Pipeline succeeded!"
+                    echo "Image published to "$ECR_PUBLISH_IMAGE_TAG
+					docker rmi  $ECR_REPO:latest $ECR_PUBLISH_IMAGE_TAG
+					docker images
+					'''
+                    }
+                failure {
+                    sh' echo "Pipeline failed!" '
+                }
+            }
+        }
